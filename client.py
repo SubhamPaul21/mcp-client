@@ -114,20 +114,36 @@ class MCPClient:
 
                 # Call the MCP tool
                 result = await self.client.call_tool(tool_name, tool_args)
-                tool_results.append({"call": tool_name, "result": result})
+                # tool_results.append({"call": tool_name, "result": result})
 
-                logging.info(f"[Calling tool {tool_name} with args {tool_args}]")
-
-                # Add the tool result as an assistant message for context
-                messages.append({"role": "assistant", "content": result.content})
+                logging.info(
+                    f"[Calling tool {tool_name} with args {tool_args}. Output: {result.content}]"
+                )
 
                 # Inject a world-class assistant prompt
-                assistant_prompt = (
-                    "The assistant has just retrieved information from a specialized tool to support the user's query. "
-                    "Use this data comprehensively and accurately to formulate a clear, concise, and informative answer. "
-                    "Ensure that the response directly addresses the user's needs, integrating relevant details from the tool output. "
-                    "Avoid unnecessary repetition and keep the response focused and engaging."
-                )
+                assistant_prompt = f"""
+                If you used the 'search_papers' tool, you should have a list of paper IDs in {result.content[0].text}.
+                    The assistant has just retrieved information from a specialized tool in {result.content[0].text} which contains the paper ID retreived from the arxiv server. Use these paper IDs to fetch detailed information about the papers.
+                    For each paper found, extract and organize the following information:
+                    - Paper title
+                    - Authors
+                    - Publication date
+                    - Brief summary of the key findings
+                    - Main contributions or innovations
+                    - Methodologies used
+                    - Relevance to the topic '{tool_args.get("topic")}'
+                    
+                    3. Provide a comprehensive summary that includes:
+                    - Overview of the current state of research in '{tool_args.get("topic")}'
+                    - Common themes and trends across the papers
+                    - Key research gaps or areas for future investigation
+                    - Most impactful or influential papers in this area
+                    
+                    4. Organize your findings in a clear, structured format with headings and bullet points for easy readability.
+                    
+                    Please present both detailed information about each paper and a high-level synthesis of the research landscape in {tool_args.get("topic")}.
+                    Avoid unnecessary repetition and keep the response focused and engaging.
+                    """
                 messages.append({"role": "assistant", "content": assistant_prompt})
                 # messages.append({"role": "user", "content": result.content})
 
