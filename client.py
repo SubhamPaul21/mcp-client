@@ -3,7 +3,7 @@ import os
 import sys
 from contextlib import AsyncExitStack
 from dotenv import load_dotenv
-
+import json
 from fastmcp import Client
 from groq import Groq
 
@@ -32,7 +32,35 @@ class MCPClient:
         if not self.client:
             raise RuntimeError("Client not connected")
 
-        messages = [{"role": "user", "content": query}]
+        system_prompt = """
+            You are an intelligent assistant designed to help users by leveraging a variety of specialized tools and functions available to you. Your job is to understand the user's queries and determine when to call the appropriate tool to fetch accurate and relevant information. Always aim to provide clear, concise, and helpful responses by integrating tool outputs when necessary. If you don't have enough information, prompt the user for clarification. Your goal is to assist the user efficiently by combining your language understanding with the power of these external tools.
+
+            Search for {num_papers} academic papers about '{topic}' using the 
+            search_papers tool first. Follow these instructions:
+                1. First, search for papers using search_papers(topic='{topic}', max_results={num_papers})
+                2. Once that's done, for each paper found, extract and organize the following information:
+                - Paper title
+                - Authors
+                - Publication date
+                - Brief summary of the key findings
+                - Main contributions or innovations
+                - Methodologies used
+                - Relevance to the topic '{topic}'
+                
+                3. Provide a comprehensive summary that includes:
+                - Overview of the current state of research in '{topic}'
+                - Common themes and trends across the papers
+                - Key research gaps or areas for future investigation
+                - Most impactful or influential papers in this area
+                
+                4. Organize your findings in a clear, structured format with headings and bullet points for easy readability.
+                
+                Please present both detailed information about each paper and a high-level synthesis of the research landscape in {topic}.
+        """
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query},
+        ]
 
         # Fetch tools from server and prepare for Groq
         tools = await self.client.list_tools()
@@ -60,35 +88,47 @@ class MCPClient:
         tool_results = []
         final_text = []
 
-        content_data = response.choices[0].message.content
-        logging.info(f"content_data: {response.choices}")
+        choice = response.choices[0]
+        message = choice.message
+        logging.info(
+            f"Groq completion: finish_reason={choice.finish_reason} | tool_calls={message.tool_calls}"
+        )
 
-        # Guard: content_data could be None or a string instead of list
-        if content_data is None:
-            content_data = []
-        elif isinstance(content_data, str):
-            content_data = [content_data]
+        # Case 1: Normal chat/completion response
+        if choice.finish_reason == "stop" and message.content:
+            final_text.append(message.content)
 
-        # Processing response contents (support strings and tool calls)
-        for content in content_data:
-            if isinstance(content, str):
-                final_text.append(content)
-            elif isinstance(content, dict) and content.get("type") == "tool_use":
-                tool_name = content.get("name")
-                tool_args = content.get("input")
+        # Case 2: Tool call requested
+        elif choice.finish_reason == "tool_calls" and message.tool_calls:
+            for tool_call in message.tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = tool_call.function.arguments
 
-                # Call MCP tool
+                # Arguments may be a JSON string; parse it if needed
+                if isinstance(tool_args, str):
+                    tool_args = json.loads(tool_args)
+
+                # Call the MCP tool
                 result = await self.client.call_tool(tool_name, tool_args)
                 tool_results.append({"call": tool_name, "result": result})
 
                 final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
 
-                # Continue conversation with tool results
-                if "text" in content and content["text"]:
-                    messages.append({"role": "assistant", "content": content["text"]})
-                messages.append({"role": "user", "content": result.content})
+                # Add the tool result as an assistant message for context
+                messages.append({"role": "assistant", "content": result.content})
 
-                # Get updated response from Groq
+                # Inject a world-class assistant prompt
+                assistant_prompt = (
+                    "The assistant has just retrieved information from a specialized tool to support the user's query. "
+                    "Use this data comprehensively and accurately to formulate a clear, concise, and informative answer. "
+                    "Ensure that the response directly addresses the user's needs, integrating relevant details from the tool output. "
+                    "If any ambiguities exist, ask clarifying questions politely and helpfully. "
+                    "Avoid unnecessary repetition and keep the response focused and engaging."
+                )
+                messages.append({"role": "assistant", "content": assistant_prompt})
+                # messages.append({"role": "user", "content": result.content})
+
+                # Get next LLM response with updated chat history
                 response = await asyncio.to_thread(
                     self.groq.chat.completions.create,
                     model="llama-3.3-70b-versatile",
@@ -96,15 +136,10 @@ class MCPClient:
                     tools=groq_tools,
                     max_tokens=1000,
                 )
-
-                # Repeat normalization for new response
-                new_content_data = response.choices[0].message.content
-                if new_content_data is None:
-                    new_content_data = []
-                elif isinstance(new_content_data, str):
-                    new_content_data = [new_content_data]
-
-                final_text.extend(new_content_data)
+                next_choice = response.choices[0]
+                next_content = next_choice.message.content
+                if next_content:
+                    final_text.append(next_content)
 
         return "".join(final_text).strip()
 
