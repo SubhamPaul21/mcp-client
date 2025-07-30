@@ -12,6 +12,23 @@ import logging
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 
+config = {
+    "mcpServers": {
+        "arxiv_server": {
+            "url": "http://localhost:8000/mcp",
+            "transport": "http",
+        },
+        "sentiment_analysis_server": {
+            "url": "http://localhost:8001/mcp",
+            "transport": "http",
+        },
+        "pull_request_agent_server": {
+            "url": "http://localhost:8002/mcp",
+            "transport": "http",
+        },
+    }
+}
+
 
 class MCPClient:
     def __init__(self):
@@ -19,10 +36,10 @@ class MCPClient:
         self.exit_stack = AsyncExitStack()
         self.groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-    async def connect_and_chat(self, server_url: str):
+    async def connect_and_chat(self):
         print("\nMCP Client Started!")
         print("Type your queries or 'quit' to exit.")
-        self.client = Client(server_url)
+        self.client = Client(config)
         async with self.client:
             tools = await self.client.list_tools()
             print("\nConnected to server with tools:", [tool.name for tool in tools])
@@ -35,27 +52,14 @@ class MCPClient:
         system_prompt = """
             You are an intelligent assistant designed to help users by leveraging a variety of specialized tools and functions available to you. Your job is to understand the user's queries and determine when to call the appropriate tool to fetch accurate and relevant information. Always aim to provide clear, concise, and helpful responses by integrating tool outputs when necessary. If you don't have enough information, prompt the user for clarification. Your goal is to assist the user efficiently by combining your language understanding with the power of these external tools.
 
-            Search for {num_papers} academic papers about '{topic}' using the 
-            search_papers tool first. Follow these instructions:
-                1. First, search for papers using search_papers(topic='{topic}', max_results={num_papers})
-                2. Once that's done, for each paper found, extract and organize the following information:
-                - Paper title
-                - Authors
-                - Publication date
-                - Brief summary of the key findings
-                - Main contributions or innovations
-                - Methodologies used
-                - Relevance to the topic '{topic}'
-                
-                3. Provide a comprehensive summary that includes:
-                - Overview of the current state of research in '{topic}'
-                - Common themes and trends across the papers
-                - Key research gaps or areas for future investigation
-                - Most impactful or influential papers in this area
-                
-                4. Organize your findings in a clear, structured format with headings and bullet points for easy readability.
-                
-                Please present both detailed information about each paper and a high-level synthesis of the research landscape in {topic}.
+            You have access to the following tools:
+            - search_papers: Search for academic papers on a specific topic.
+            - extract_info: Extract detailed information about a specific paper.
+            - get_topic_papers: Retrieve detailed information about papers on a specific topic.
+            Use these tools to enhance your responses and provide the user with the best possible information. 
+            You have access to the following prompt:
+            - generate_search_prompt: Generate a prompt for the LLM to find and discuss academic papers on a specific topic.
+            Use this prompt to create a focused search for papers related to the user's query.
         """
         messages = [
             {"role": "system", "content": system_prompt},
@@ -112,7 +116,7 @@ class MCPClient:
                 result = await self.client.call_tool(tool_name, tool_args)
                 tool_results.append({"call": tool_name, "result": result})
 
-                final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
+                logging.info(f"[Calling tool {tool_name} with args {tool_args}]")
 
                 # Add the tool result as an assistant message for context
                 messages.append({"role": "assistant", "content": result.content})
@@ -122,7 +126,6 @@ class MCPClient:
                     "The assistant has just retrieved information from a specialized tool to support the user's query. "
                     "Use this data comprehensively and accurately to formulate a clear, concise, and informative answer. "
                     "Ensure that the response directly addresses the user's needs, integrating relevant details from the tool output. "
-                    "If any ambiguities exist, ask clarifying questions politely and helpfully. "
                     "Avoid unnecessary repetition and keep the response focused and engaging."
                 )
                 messages.append({"role": "assistant", "content": assistant_prompt})
@@ -160,13 +163,9 @@ class MCPClient:
 
 
 async def main():
-    if len(sys.argv) < 2:
-        print("Usage: python client.py <http://localhost:8000/mcp>")
-        sys.exit(1)
-
     client = MCPClient()
     try:
-        await client.connect_and_chat(sys.argv[1])
+        await client.connect_and_chat()
     finally:
         await client.cleanup()
 
